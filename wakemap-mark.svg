@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <g fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Outer circle -->
+    <circle cx="128" cy="128" r="116"/>
+    <!-- Wake curve -->
+    <path d="M32 148
+             C64 128, 96 168, 128 148
+             S192 128, 224 148"/>
+  </g>
+  <!-- Position dot -->
+  <circle cx="176" cy="132" r="10" fill="currentColor"/>
+  <title>WakeMap Mark</title>
+</svg>

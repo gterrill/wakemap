@@ -1,0 +1,23 @@
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / UI
+ui/node_modules/
+ui/.vite/
+ui/.next/
+
+# Python / server
+__pycache__/
+*.pyc
+.env
+.venv/
+
+# Build artifacts
+dist/
+build/
+coverage/

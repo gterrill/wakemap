@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <g fill="none" stroke="currentColor" stroke-width="18" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="128" cy="128" r="106"/>
+    <path d="M32 148 C64 128, 96 168, 128 148 S192 128, 224 148"/>
+  </g>
+  <circle cx="176" cy="132" r="14" fill="currentColor"/>
+  <title>WakeMap Mark</title>
+</svg>
