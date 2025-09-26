@@ -16,10 +16,14 @@ Self-hosted, offline-first **moving map for boats**. Renders OpenFreeMap + OpenS
 - **Immich bridge (optional)**: overlay recent photos near current position
 - **Self-hosted**: runs on-board; no internet required once tiles are cached
 
+## TODO
+- [x] Stub server and set up sample track
+- [] Map UI using CDN
+
 ## Quickstart
 ```bash
 # 1) Clone
-git clone https://github.com/<you>/wakemap
+git clone https://github.com/gterrill/wakemap
 cd wakemap
 
 # 2) Start stack (example: compose)
