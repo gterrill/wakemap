@@ -1,0 +1,298 @@
+package main
+
+import (
+    "context"
+    "database/sql"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+	dbgen "github.com/gterrill/wakemap/core/internal/db"
+	dbschema "github.com/gterrill/wakemap/core/db"
+	"github.com/gterrill/wakemap/core/internal/sim"
+)
+
+type Config struct {
+	Port              int
+	LogLevel          string
+	PublicDir         string
+	DBPath            string
+	PMTilesDir        string
+	ExportDir         string
+	CacheDir          string
+	RedactionGeoJSON  string
+	MapStyleURL       string
+	SeamarkTileURL    string
+	SignalKWSURL      string
+	CORSAllowOrigins  string
+	CORSAllowHeaders  string
+	CORSAllowMethods  string
+}
+
+type App struct {
+	cfg Config
+	log *slog.Logger
+	db  *sql.DB
+	q   *dbgen.Queries
+}
+
+func getenv(k, def string) string { if v := os.Getenv(k); v != "" { return v }; return def }
+
+func loadConfig() Config {
+	port, _ := strconv.Atoi(getenv("PORT", "8080"))
+	return Config{
+		Port:             port,
+		LogLevel:         getenv("LOG_LEVEL", "info"),
+		PublicDir:        getenv("PUBLIC_DIR", "/app/public"),
+		DBPath:           getenv("DB_PATH", "/data/tracks.db"),
+		PMTilesDir:       getenv("PMTILES_DIR", "/data/pmtiles"),
+		ExportDir:        getenv("EXPORT_DIR", "/data/exports"),
+		CacheDir:         getenv("CACHE_DIR", "/data/cache"),
+		RedactionGeoJSON: getenv("REDACTION_GEOJSON", "/data/redaction.geojson"),
+		MapStyleURL:      getenv("MAP_STYLE_URL", ""),
+		SeamarkTileURL:   getenv("SEAMARK_TILE_URL", ""),
+		SignalKWSURL:     getenv("SIGNALK_WS_URL", ""),
+		CORSAllowOrigins: getenv("CORS_ALLOW_ORIGINS", "*"),
+		CORSAllowHeaders: getenv("CORS_ALLOW_HEADERS", "*"),
+		CORSAllowMethods: getenv("CORS_ALLOW_METHODS", "GET,POST,OPTIONS"),
+	}
+}
+
+func withCORS(cfg Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", cfg.CORSAllowOrigins)
+		w.Header().Set("Access-Control-Allow-Headers", cfg.CORSAllowHeaders)
+		w.Header().Set("Access-Control-Allow-Methods", cfg.CORSAllowMethods)
+		if r.Method == http.MethodOptions { w.WriteHeader(http.StatusNoContent); return }
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (a *App) healthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "now": time.Now().UTC().Format(time.RFC3339Nano),
+		"pid": os.Getpid(), "host": hostname(),
+	})
+}
+
+func (a *App) version(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": "wakemap-core", "version": "0.0.1",
+		"mapStyle": a.cfg.MapStyleURL, "seamark": a.cfg.SeamarkTileURL,
+	})
+}
+
+func (a *App) createTrack(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name      string `json:"name"`
+		StartedAt int64  `json:"started_at"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" || body.StartedAt == 0 {
+		http.Error(w, "name and started_at (unix) required", http.StatusBadRequest)
+		return
+	}
+	row, err := a.q.CreateTrack(r.Context(), dbgen.CreateTrackParams{
+		Name: body.Name, StartedAt: body.StartedAt,
+	})
+	if err != nil { http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError); return }
+	writeJSON(w, http.StatusOK, row)
+}
+
+func (a *App) listTracks(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 { limit = n }
+	}
+	rows, err := a.q.ListTracks(r.Context(), int64(limit))
+	if err != nil { http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError); return }
+	writeJSON(w, http.StatusOK, map[string]any{"tracks": rows})
+}
+
+func (a *App) getTrackGeoJSON(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/tracks/")
+	id = strings.TrimSuffix(id, ".geojson")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"type": "FeatureCollection", "name": fmt.Sprintf("track-%s", id),
+		"features": []any{},
+	})
+}
+
+func (a *App) getTrackGPX(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/gpx+xml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="wakemap-core"></gpx>`))
+}
+
+func (a *App) exportTrackPNG(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "export not implemented yet"})
+}
+
+func (a *App) router() http.Handler {
+	mux := http.NewServeMux()
+
+	// health & meta
+	mux.HandleFunc("/healthz", a.healthz)
+	mux.HandleFunc("/api/version", a.version)
+
+	// tracks
+	mux.HandleFunc("/api/tracks", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Path != "/api/tracks" { http.NotFound(w, r); return }
+			a.listTracks(w, r)
+		case http.MethodPost:
+			a.createTrack(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/tracks/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".geojson") { a.getTrackGeoJSON(w, r); return }
+		if strings.HasSuffix(r.URL.Path, ".gpx") { a.getTrackGPX(w, r); return }
+		http.NotFound(w, r)
+	})
+
+	// simulator HTTP endpoint (thin wrapper)
+	mux.HandleFunc("/api/simulate/broughton-to-newcastle", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost { http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
+		a.simulateBroughtonToNewcastleHTTP(w, r)
+	})
+
+	// POIs stub
+	mux.HandleFunc("/api/pois/nearby", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		_, e1 := strconv.ParseFloat(q.Get("lon"), 64)
+		_, e2 := strconv.ParseFloat(q.Get("lat"), 64)
+		_, e3 := strconv.ParseFloat(q.Get("radius"), 64)
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		if limit <= 0 { limit = 20 }
+		if e1 != nil || e2 != nil || e3 != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "lon, lat, radius are required", "params": q.Encode()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"pois": []any{}, "why": "stub"})
+	})
+
+	// static SPA
+	publicFS := http.Dir(a.cfg.PublicDir)
+	fileServer := http.FileServer(publicFS)
+	mux.Handle("/", spaHandler(publicFS, fileServer))
+
+	return withCORS(a.cfg, mux)
+}
+
+func spaHandler(root http.FileSystem, fs http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" { fs.ServeHTTP(w, r); return }
+		if f, err := root.Open(r.URL.Path); err == nil {
+			defer f.Close()
+			if fi, _ := f.Stat(); fi != nil && !fi.IsDir() { fs.ServeHTTP(w, r); return }
+		}
+		r2 := *r; r2.URL.Path = "/index.html"; fs.ServeHTTP(w, &r2)
+	})
+}
+
+func hostname() string { h, _ := os.Hostname(); return h }
+
+func openAndInitDB(path string, log *slog.Logger) (*sql.DB, *dbgen.Queries, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { return nil, nil, err }
+	d, err := sql.Open("sqlite3", path)
+	if err != nil { return nil, nil, err }
+	if _, err := d.ExecContext(context.Background(), dbschema.Schema); err != nil {
+		_ = d.Close()
+		return nil, nil, fmt.Errorf("apply schema: %w", err)
+	}
+	return d, dbgen.New(d), nil
+}
+
+func main() {
+	cfg := loadConfig()
+
+	// logger
+	var lvl slog.Level
+	switch strings.ToLower(cfg.LogLevel) {
+	case "debug": lvl = slog.LevelDebug
+	case "warn": lvl = slog.LevelWarn
+	case "error": lvl = slog.LevelError
+	default: lvl = slog.LevelInfo
+	}
+	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+	slog.SetDefault(log)
+
+	// CLI flags (before server start)
+	simulate := flag.String("simulate", "", "Run a one-off simulation and exit (e.g. 'broughton-to-newcastle')")
+	speedKn := flag.Float64("speed_kn", 6.0, "Simulation speed in knots")
+	intervalS := flag.Int("interval_s", 10, "Simulation interval seconds")
+	flag.Parse()
+
+	// DB
+	db, q, err := openAndInitDB(cfg.DBPath, log)
+	if err != nil { log.Error("db init failed", "err", err); os.Exit(1) }
+	defer db.Close()
+
+	// CLI short-circuit
+	if *simulate != "" {
+		switch *simulate {
+		case "broughton-to-newcastle":
+			id, points, endedAt, err := sim.RunBroughtonToNewcastle(context.Background(), q, *speedKn, *intervalS)
+			if err != nil { log.Error("simulation failed", "err", err); os.Exit(1) }
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"ok": true, "track_id": id, "points": points, "ended_at": endedAt,
+				"speed_kn": *speedKn, "interval": *intervalS, "simulator": *simulate,
+			})
+			return
+		default:
+			log.Error("unknown simulator", "name", *simulate); os.Exit(2)
+		}
+	}
+
+	// normal server
+	app := &App{cfg: cfg, log: log, db: db, q: q}
+	addr := fmt.Sprintf(":%d", cfg.Port)
+	srv := &http.Server{Addr: addr, Handler: app.router(), ReadHeaderTimeout: 10 * time.Second}
+
+	log.Info("starting wakemap-core", "addr", addr, "publicDir", cfg.PublicDir, "db", cfg.DBPath)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil { log.Error("listen error", "err", err); os.Exit(1) }
+
+	idle := make(chan struct{})
+	go func() {
+		sigc := make(chan os.Signal, 1)
+		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
+		<-sigc
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		close(idle)
+	}()
+
+	if _, err := os.Stat(cfg.PublicDir); os.IsNotExist(err) {
+		log.Warn("public dir not found; create or mount it", "dir", cfg.PublicDir)
+	} else if abs, _ := filepath.Abs(cfg.PublicDir); abs != "" {
+		log.Info("serving static files", "dir", abs)
+	}
+
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Error("server error", "err", err); os.Exit(1)
+	}
+	<-idle
+	log.Info("shutdown complete")
+}

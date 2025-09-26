@@ -38,6 +38,19 @@ http://localhost:8080  # replace with your host or boat LAN address
 - **assets/** – logos/icons
 - **docs/** – configuration and how-tos
 
+## Building
+
+* rebuild: `docker compose build --no-cache core`
+* create db: 
+```
+# install sqlc if needed
+brew install sqlc   # or: go install github.com/kyleconroy/sqlc/cmd/sqlc@latest
+
+# run this everytime db/*.sql changes
+cd core
+sqlc generate -f db/sqlc.yaml
+```
+
 ## Status
 Alpha. Expect rapid changes. PRs and issues welcome.
 

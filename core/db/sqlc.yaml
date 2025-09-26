@@ -1,0 +1,11 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema:
+      - "schema.sql"        # real runtime schema (has VIRTUAL TABLE)
+      - "sqlc_shadow.sql"   # analysis-only stub for sqlc
+    queries: "queries.sql"
+    gen:
+      go:
+        package: "db"
+        out: "../internal/db"

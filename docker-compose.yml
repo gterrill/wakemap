@@ -1,0 +1,82 @@
+# docker-compose.yml
+name: wakemap
+
+services:
+  core:
+    # Build the Go server from the /core subrepo
+    build:
+      context: ./core
+      args:
+        - GO_BUILD_FLAGS=-trimpath
+    image: wakemap-core:local
+    container_name: wakemap-core
+    # Run as a non-root user if you pass UID/GID in .env (recommended on a NAS)
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      # ---- App basics ----
+      TZ: "${TZ:-Australia/Sydney}"
+      PORT: "${PORT:-8080}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      # ---- Map/tiles (offline-first) ----
+      MAP_STYLE_URL: "${MAP_STYLE_URL:-http://tiles.local:8081/styles/openfreemap/style.json}"
+      SEAMARK_TILE_URL: "${SEAMARK_TILE_URL:-http://seamark-proxy.internal/tiles/seamark/{z}/{x}/{y}.png}"
+      # ---- Data and caching ----
+      DB_PATH: "/data/tracks.db"
+      PMTILES_DIR: "/data/pmtiles"
+      EXPORT_DIR: "/data/exports"
+      CACHE_DIR: "/data/cache"
+      REDACTION_GEOJSON: "/data/redaction.geojson"
+      # ---- Signal K bridge ----
+      SIGNALK_WS_URL: "${SIGNALK_WS_URL:-ws://signalk.local:3000/signalk/v1/stream?subscribe=none}"
+      # ---- CORS / security ----
+      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS:-*}"
+      CORS_ALLOW_HEADERS: "${CORS_ALLOW_HEADERS:-*}"
+      CORS_ALLOW_METHODS: "${CORS_ALLOW_METHODS:-GET,POST,OPTIONS}"
+    volumes:
+      # Persistent app data (SQLite, exports, cache, pmtiles)
+      - type: bind
+        source: ${DATA_DIR:-${HOME}/wakemap/data}
+        target: /data
+      # Optional: serve a local SPA bundle if the Go server expects ./public
+      - type: bind
+        source: ${PUBLIC_DIR:-./core/public}
+        target: /app/public
+        bind:
+          create_host_path: true
+      # Optional: mount PMTiles read-only if you keep them separate
+      # - /srv/wakemap/pmtiles:/data/pmtiles:ro
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    # Keep memory/cpu sane for a NAS
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "512M"
+        reservations:
+          cpus: "0.25"
+          memory: "128M"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+  
+  sim:
+    profiles: ["sim"]
+    image: wakemap-core:local
+    depends_on:
+      - core
+    volumes:
+      - type: bind
+        source: ${DATA_DIR:-${HOME}/wakemap/data}
+        target: /data
+    entrypoint: ["/app/server"]
+    command: ["-simulate","broughton-to-newcastle","-speed_kn","9","-interval_s","10"]
