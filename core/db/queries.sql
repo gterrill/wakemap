@@ -20,11 +20,22 @@ INSERT OR REPLACE INTO positions_rtree (id, minX, maxX, minY, maxY)
 VALUES (?, ?, ?, ?, ?);
 
 -- name: BBoxForTrack :one
-SELECT MIN(lon) AS min_lon, MAX(lon) AS max_lon, MIN(lat) AS min_lat, MAX(lat) AS max_lat
+SELECT
+  COALESCE(CAST(MIN(lon) AS REAL), 0) AS min_lon,
+  COALESCE(CAST(MAX(lon) AS REAL), 0) AS max_lon,
+  COALESCE(CAST(MIN(lat) AS REAL), 0) AS min_lat,
+  COALESCE(CAST(MAX(lat) AS REAL), 0) AS max_lat
 FROM positions
 WHERE track_id = ?;
+
 
 -- name: InsertPositionReturning :one
 INSERT INTO positions (track_id, t, lon, lat, sog_ms, cog_rad, src, qual)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING id;
+
+-- name: PositionsForTrack :many
+SELECT lon, lat
+FROM positions
+WHERE track_id = ?
+ORDER BY t ASC;

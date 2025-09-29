@@ -1,0 +1,11 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "web:dev",
+            "type": "shell",
+            "command": "cd web && pnpm dev",
+            "problemMatcher": []
+        }
+    ]
+}

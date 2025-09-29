@@ -1,0 +1,6 @@
+github.com/gterrill/wakemap/core v0.0.0-20250926212616-dd43aebcec28 h1:fb0e5TE1bRTbl4QtfjTQE9OY6VYK+f4ekZzI10N1V8M=
+github.com/gterrill/wakemap/core v0.0.0-20250926212616-dd43aebcec28/go.mod h1:l1rc+IUeEyxmfa6yGub5JK/YP1E3K931/h58rWh/w+o=
+github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=
+github.com/joho/godotenv v1.5.1/go.mod h1:f4LDr5Voq0i2e/R5DDNOoa2zzDfwtkZa6DnEwAbqwq4=
+github.com/mattn/go-sqlite3 v1.14.32 h1:JD12Ag3oLy1zQA+BNn74xRgaBbdhbNIDYvQUEuuErjs=
+github.com/mattn/go-sqlite3 v1.14.32/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Wakemap</title>
+  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet"/>
+  <style>
+    html,body,#map{height:100%;margin:0}
+    .corner{position:absolute;z-index:1;top:8px;left:8px;background:#fff;padding:8px 10px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.1);font:14px/1.3 system-ui}
+    .corner button{margin-left:6px}
+  </style>
+</head>
+<body>
+  <div class="corner">
+    <span id="meta">Loading…</span>
+    <button id="lastBtn">Show last track</button>
+  </div>
+  <div id="map"></div>
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<script>
+  let map; // make it global to handlers
+
+  async function safeFetchJSON(url, init) {
+    let res;
+    try {
+      res = await fetch(url, init);
+    } catch (e) {
+      throw new Error(`Network error fetching ${url}: ${e.message}`);
+    }
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (!res.ok) {
+      // Try to read text for a friendly error
+      const txt = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status} on ${url}: ${txt || 'no body'}`);
+    }
+    if (!ct.includes('application/json')) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(`Non-JSON from ${url}: ${txt.slice(0, 120)}`);
+    }
+    return res.json();
+  }
+
+  (async function () {
+    // Ask backend for map URLs
+    let meta = {};
+    try {
+      meta = await safeFetchJSON('/api/version');
+    } catch (e) {
+      console.warn('version fetch failed:', e);
+    }
+
+    // Prefer local style if present, otherwise CDN
+    const localStyle = meta.mapStyle || '';
+    const cdnStyle = 'https://tiles.openfreemap.org/styles/liberty';
+    const seamarkURL = meta.seamark || 'https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png';
+
+    map = new maplibregl.Map({
+      container: 'map',
+      style: localStyle || cdnStyle,
+      center: [152.2, -32.75],
+      zoom: 8
+    });
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }));
+
+    // If the local style fails (DNS/timeout/CORS), fall back to CDN once.
+    let styleFallbackUsed = false;
+    map.on('error', (ev) => {
+      const msg = String(ev?.error || ev);
+      if (!styleFallbackUsed && localStyle && msg.match(/Failed to fetch|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION/)) {
+        styleFallbackUsed = true;
+        console.warn('Basemap failed, falling back to CDN style:', msg);
+        map.setStyle(cdnStyle);
+      }
+    });
+
+    map.on('load', () => {
+      // Seamarks overlay (raster)
+      map.addSource('seamarks', {
+        type: 'raster',
+        tiles: [seamarkURL],
+        tileSize: 256,
+        attribution: '⛵ OpenSeaMap'
+      });
+      map.addLayer({ id: 'seamarks', type: 'raster', source: 'seamarks' });
+
+      // Track source/layer
+      map.addSource('track', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({
+        id: 'track-line',
+        type: 'line',
+        source: 'track',
+        paint: { 'line-width': 3, 'line-color': '#ff3b3b' }
+      });
+
+      // Auto-show last track when map is ready
+      showLastTrack().catch((e) => console.warn('showLastTrack:', e.message));
+    });
+
+    async function showLastTrack() {
+      const list = await safeFetchJSON('/api/tracks');
+      const tracks = Array.isArray(list?.tracks) ? list.tracks : [];
+      if (!tracks.length || !tracks[0]?.id) {
+        throw new Error('No tracks found. Run the simulator first.');
+      }
+      const id = tracks[0].id;
+      const gj = await safeFetchJSON(`/api/tracks/${id}.geojson`);
+      const src = map.getSource('track');
+      if (src) src.setData(gj);
+
+      if (Array.isArray(gj.bbox) && gj.bbox.length === 4) {
+        const [minx, miny, maxx, maxy] = gj.bbox;
+        map.fitBounds([[minx, miny], [maxx, maxy]], { padding: 40, linear: true });
+      }
+    }
+
+    document.getElementById('lastBtn')?.addEventListener('click', () => {
+      showLastTrack().catch((e) => alert(e.message));
+    });
+  })();
+</script>
+</body>
+</html>
