@@ -12,6 +12,54 @@ type SourceInit = Parameters<maplibregl.Map['addSource']>[1];
 let map: maplibregl.Map;
 let startMarker: maplibregl.Marker | null = null;
 let finishMarker: maplibregl.Marker | null = null;
+const DRAWER_BREAKPOINT = 960;
+let drawerMediaQuery: MediaQueryList | null = null;
+let drawerModeInitialized = false;
+let seamarkReady: Promise<boolean> | null = null;
+
+function isDrawerOpen() {
+  return document.body.classList.contains('drawer-open');
+}
+
+function isDrawerPermanent() {
+  return document.body.classList.contains('drawer-permanent');
+}
+
+function setDrawerOpen(open: boolean) {
+  document.body.classList.toggle('drawer-open', open);
+  const toggle = document.getElementById('drawerToggle');
+  if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function setupDrawer() {
+  const toggle = document.getElementById('drawerToggle');
+  const close = document.getElementById('drawerClose');
+  const overlay = document.getElementById('drawerOverlay');
+  toggle?.addEventListener('click', () => setDrawerOpen(!isDrawerOpen()));
+  close?.addEventListener('click', () => setDrawerOpen(false));
+  overlay?.addEventListener('click', () => setDrawerOpen(false));
+}
+
+function applyDrawerMode(permanent: boolean) {
+  document.body.classList.toggle('drawer-permanent', permanent);
+  if (!drawerModeInitialized) {
+    setDrawerOpen(permanent);
+    drawerModeInitialized = true;
+    return;
+  }
+  if (!permanent && isDrawerOpen()) setDrawerOpen(false);
+}
+
+function initResponsiveDrawer() {
+  drawerMediaQuery = window.matchMedia(`(min-width: ${DRAWER_BREAKPOINT}px)`);
+  const apply = (mq: MediaQueryList | MediaQueryListEvent) => applyDrawerMode(mq.matches);
+  apply(drawerMediaQuery);
+  if (typeof drawerMediaQuery.addEventListener === 'function') {
+    drawerMediaQuery.addEventListener('change', apply);
+  } else if (typeof drawerMediaQuery.addListener === 'function') {
+    drawerMediaQuery.addListener(apply);
+  }
+}
 
 function fmtCoord(lon: number, lat: number) {
   return `${lat.toFixed(5)}°, ${lon.toFixed(5)}°`;
@@ -257,6 +305,7 @@ function computeTrackStats(gj: any): TrackStats {
 
 function updateStatsUI(stats: TrackStats) {
   const byId = (id: string) => document.getElementById(id)!;
+  document.getElementById('stats')?.classList.remove('hidden');
   byId('stat-name').textContent = stats.name ? stats.name : 'Track';
   byId('stat-distance').textContent = `Dist: ${stats.distanceNm.toFixed(1)} nm`;
   byId('stat-duration').textContent = `Time: ${formatDuration(stats.durationSec)}`;
@@ -344,10 +393,15 @@ async function populateTrackSelect() {
     opt.textContent = `${t.name || t.id} — ${started} ${distNm}`;
     sel.appendChild(opt);
   }
-  sel.onchange = () => showTrack(sel.value);
+  sel.onchange = () => {
+    showTrack(sel.value);
+    if (sel.value && !isDrawerPermanent()) setDrawerOpen(false);
+  };
 }
 
 (async () => {
+  setupDrawer();
+  initResponsiveDrawer();
   const style = await pickStyle();
   map = new maplibregl.Map({
     container: 'map',
@@ -363,17 +417,35 @@ async function populateTrackSelect() {
 
   // Add seamarks raster overlay through our Go proxy (CORS + cache)
   map.on('load', async () => {
-    await populateTrackSelect();    
-    map.addSource('seamarks', {
-      type: 'raster',
-      tiles: ['http://localhost:8080/seamark/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenSeaMap contributors',
-    });
-    map.addLayer({
-      id: 'seamarks',
-      type: 'raster',
-      source: 'seamarks',
-    });
+    await populateTrackSelect();
+    if (await checkSeamarkAvailable()) {
+      map.addSource('seamarks', {
+        type: 'raster',
+        tiles: ['/seamark/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        attribution: '© OpenSeaMap contributors',
+      });
+      map.addLayer({
+        id: 'seamarks',
+        type: 'raster',
+        source: 'seamarks',
+      });
+    } else {
+      console.info('Seamark tiles unavailable; skipping overlay.');
+    }
   });
 })();
+async function checkSeamarkAvailable(): Promise<boolean> {
+  if (!seamarkReady) {
+    seamarkReady = (async () => {
+      try {
+        const resp = await fetch('/seamark/0/0/0.png', { method: 'HEAD' });
+        return resp.ok;
+      } catch (err) {
+        console.debug('Seamark availability check failed:', err);
+        return false;
+      }
+    })();
+  }
+  return seamarkReady;
+}

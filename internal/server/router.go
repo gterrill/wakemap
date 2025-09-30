@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 	"path/filepath"
+
+	"wakemap/internal/seamark"
 )
 
 func NewMux(api *API) *http.ServeMux {
@@ -11,6 +13,9 @@ func NewMux(api *API) *http.ServeMux {
 	// API
 	mux.HandleFunc("/api/tracks", api.ListTracks)        // GET
 	mux.HandleFunc("/api/tracks/", api.TrackGeoJSONByID) // GET /api/tracks/:id.geojson
+
+	// Seamark proxy (adds CORS + caching)
+	mux.Handle("/seamark/", WithCORS(http.StripPrefix("/seamark", seamark.Handler())))
 
 	// Static (serve the Vite build output if present)
 	dist := filepath.Join("web", "dist")

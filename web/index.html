@@ -6,27 +6,210 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Wakemap Dev</title>
   <style>
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+    }
+
     #map {
       position: absolute;
-      inset: 0
+      inset: 0;
+    }
+
+    #drawerToggle {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 20;
+      background: #ffffff;
+      border: none;
+      border-radius: 999px;
+      padding: 10px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+      cursor: pointer;
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #drawerToggle:focus-visible {
+      outline: 2px solid #2563eb;
+      outline-offset: 2px;
+    }
+
+    #drawerToggle .icon-bars {
+      position: relative;
+      width: 18px;
+      height: 2px;
+      background: #1f2933;
+      border-radius: 1px;
+    }
+
+    #drawerToggle .icon-bars::before,
+    #drawerToggle .icon-bars::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      width: 18px;
+      height: 2px;
+      background: #1f2933;
+      border-radius: 1px;
+    }
+
+    #drawerToggle .icon-bars::before {
+      top: -6px;
+    }
+
+    #drawerToggle .icon-bars::after {
+      top: 6px;
+    }
+
+    body.drawer-open #drawerToggle {
+      display: none;
+    }
+
+    #drawerOverlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.2);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      z-index: 10;
+    }
+
+    body.drawer-open:not(.drawer-permanent) #drawerOverlay {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    body.drawer-permanent #drawerOverlay {
+      display: none;
+    }
+
+    #drawer {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 280px;
+      padding: 16px 20px;
+      background: #ffffff;
+      box-shadow: 2px 0 14px rgba(0, 0, 0, 0.16);
+      transform: translateX(-100%);
+      transition: transform 0.25s ease;
+      z-index: 15;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow-y: auto;
+    }
+
+    body.drawer-open #drawer {
+      transform: translateX(0);
+    }
+
+    body.drawer-permanent #drawer {
+      position: fixed;
+    }
+
+    #drawer header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      font-size: 16px;
+      color: #1f2933;
+      position: sticky;
+      top: 0;
+      background: #ffffff;
+      padding-bottom: 8px;
+      margin-bottom: 8px;
+      border-bottom: 1px solid #e4ebf5;
+    }
+
+    #drawerClose {
+      appearance: none;
+      background: none;
+      border: none;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      color: #52606d;
+    }
+
+    #drawerContent label {
+      display: block;
+      font-size: 13px;
+      color: #52606d;
+      margin-bottom: 4px;
+    }
+
+    #drawerContent select {
+      width: 100%;
+      padding: 6px 8px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #cbd2d9;
+    }
+
+    #drawerContent {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    #stats {
+      position: absolute;
+      right: 12px;
+      bottom: 45px;
+      z-index: 5;
+      background: rgba(0, 0, 0, .55);
+      color: #fff;
+      padding: .5rem .75rem;
+      border-radius: .75rem;
+      font: 14px/1.2 system-ui, sans-serif;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    body.drawer-permanent.drawer-open #map {
+      left: 280px;
+      right: 0;
+    }
+
+    @media (min-width: 960px) {
+      /* reserve space for a permanent drawer toggle when closed */
+      body.drawer-permanent:not(.drawer-open) #drawerToggle {
+        left: 12px;
+      }
     }
   </style>
 </head>
 
 <body>
-  <div id="controls" style="z-index: 10;position:absolute;top:8px;left:8px;background:#fff;padding:8px;border-radius:8px">
-    <label>
-      Track:
+  <button id="drawerToggle" aria-expanded="false" aria-controls="drawer" aria-label="Open track drawer">
+    <span class="icon-bars" aria-hidden="true"></span>
+  </button>
+  <div id="drawerOverlay"></div>
+  <aside id="drawer" role="complementary" aria-label="Track controls">
+    <header>
+      <span>Tracks</span>
+      <button id="drawerClose" aria-label="Close track drawer">&times;</button>
+    </header>
+    <div id="drawerContent">
+      <label for="trackSelect">Select a track</label>
       <select id="trackSelect">
         <option value="">— Select a track —</option>
       </select>
-    </label>
-  </div>  
+    </div>
+  </aside>
   <div id="map"></div>
-  <div id="stats" style="
-    position:absolute;left:12px;bottom:12px;z-index:5;
-    background:rgba(0,0,0,.55);color:#fff;padding:.5rem .75rem;
-    border-radius:.75rem;font:14px/1.2 system-ui, sans-serif;">
+  <div id="stats" class="hidden">
     <span id="stat-name"></span>
     <span id="stat-distance" style="margin-left:12px"></span>
     <span id="stat-duration" style="margin-left:12px"></span>

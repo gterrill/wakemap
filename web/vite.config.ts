@@ -4,9 +4,15 @@ export default defineConfig({
   server: {
     proxy: {
       // forwards http://localhost:5173/api/* -> http://localhost:8080/api/*
-      '/api': 'http://localhost:8080',
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
       // forwards seamark tiles too so your style can stay relative
-      '/seamark': 'http://localhost:8080',
+      '/seamark': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
 })
