@@ -16,6 +16,8 @@ const DRAWER_BREAKPOINT = 960;
 let drawerMediaQuery: MediaQueryList | null = null;
 let drawerModeInitialized = false;
 let seamarkReady: Promise<boolean> | null = null;
+let seamarksEnabled = false;
+let seamarkPopup: maplibregl.Popup | null = null;
 
 function isDrawerOpen() {
   return document.body.classList.contains('drawer-open');
@@ -409,6 +411,8 @@ async function populateTrackSelect() {
     center: [151.2, -33.86],
     zoom: 10,
   });
+
+  setupSeamarkClickHandler();
   
   map.addControl(new maplibregl.NavigationControl({
     showCompass: true,       // zoom only
@@ -430,11 +434,61 @@ async function populateTrackSelect() {
         type: 'raster',
         source: 'seamarks',
       });
+      seamarksEnabled = true;
     } else {
       console.info('Seamark tiles unavailable; skipping overlay.');
+      seamarksEnabled = false;
     }
   });
 })();
+
+async function fetchSeamarkFeatures(lon: number, lat: number) {
+  const params = new URLSearchParams({ lon: lon.toString(), lat: lat.toString(), radius: '400' });
+  const resp = await fetch(`/api/seamarks?${params.toString()}`);
+  if (!resp.ok) throw new Error(`seamark lookup failed: ${resp.status}`);
+  return resp.json() as Promise<GeoJSON.FeatureCollection<GeoJSON.Point, Record<string, any>>>;
+}
+
+function renderSeamarkPopup(features: GeoJSON.Feature[]) {
+  const items = features.slice(0, 5).map((f) => {
+    const props = f.properties || {};
+    const name = props.name || props['seamark:name'] || props['seamark:notice'] || props['seamark:topmark:shape'] || 'Seamark';
+    const type = props['seamark:type'] || props.type || 'unknown';
+    return `<div style="margin-bottom:6px">
+      <div style="font-weight:600">${name}</div>
+      <div style="font-size:12px;color:#4a5568">${type}</div>
+    </div>`;
+  }).join('');
+  return `<div style="font:13px/1.4 system-ui">${items}</div>`;
+}
+
+function ensureSeamarkPopup() {
+  if (!seamarkPopup) {
+    seamarkPopup = new maplibregl.Popup({ closeButton: true, offset: 12 });
+  }
+  return seamarkPopup;
+}
+
+function setupSeamarkClickHandler() {
+  map.on('click', async (e) => {
+    if (!seamarksEnabled) return;
+    const { lng, lat } = e.lngLat;
+    try {
+      const fc = await fetchSeamarkFeatures(lng, lat);
+      if (!fc.features.length) {
+        seamarkPopup?.remove();
+        return;
+      }
+      const popupHTML = renderSeamarkPopup(fc.features);
+      ensureSeamarkPopup()
+        .setLngLat([lng, lat])
+        .setHTML(popupHTML)
+        .addTo(map);
+    } catch (err) {
+      console.error(err);
+    }
+  });
+}
 async function checkSeamarkAvailable(): Promise<boolean> {
   if (!seamarkReady) {
     seamarkReady = (async () => {
