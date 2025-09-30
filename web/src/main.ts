@@ -19,6 +19,39 @@ let seamarkReady: Promise<boolean> | null = null;
 let seamarksEnabled = false;
 let seamarkPopup: maplibregl.Popup | null = null;
 
+type TimelinePoint = { timeSec: number; lon: number; lat: number; speedKn: number };
+type TrackCoord = { lon: number; lat: number; sogMs?: number | null };
+let timelinePoints: TimelinePoint[] = [];
+let timelineDurationSec = 0;
+let timelineMarker: maplibregl.Marker | null = null;
+
+const timelineContainer = document.getElementById('timelineContainer');
+const timelineRange = document.getElementById('timelineRange') as HTMLInputElement | null;
+const timelineTimestamp = document.getElementById('timelineTimestamp');
+const timelinePlayPause = document.getElementById('timelinePlayPause') as HTMLButtonElement | null;
+const timelineForward = document.getElementById('timelineForward') as HTMLButtonElement | null;
+const timelineRewind = document.getElementById('timelineRewind') as HTMLButtonElement | null;
+const timelineSpeed = document.getElementById('timelineSpeed') as HTMLSelectElement | null;
+
+let timelineCurrentSec = 0;
+let timelinePlaying = false;
+let timelineFrameId: number | null = null;
+let timelineLastTick: number | null = null;
+let timelinePlaybackRate = 1;
+let timelineSpeedKnots = 0;
+
+function createVesselMarkerElement(): HTMLDivElement {
+  const el = document.createElement('div');
+  el.className = 'marker-vessel';
+  el.innerHTML = `
+    <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true">
+      <path fill="#111" d="M32 2C18 2 6 14 6 28c0 16.2 16.4 30.3 24.5 35.9a2 2 0 0 0 2.3 0C41.6 58.3 58 44.2 58 28 58 14 46 2 32 2zm0 8c9.9 0 18 8.1 18 18S41.9 46 32 46 14 37.9 14 28 22.1 10 32 10z"/>
+      <circle cx="32" cy="28" r="20" fill="#fff"/>
+      <path fill="#111" d="M32 12 42 34H22l10-22zm0 12 6 12H26l6-12zm-14 18h28l6 8H12l6-8z"/>
+    </svg>`;
+  return el;
+}
+
 function isDrawerOpen() {
   return document.body.classList.contains('drawer-open');
 }
@@ -94,6 +127,152 @@ function removeTrackMarkers() {
   if (startMarker) { startMarker.remove(); startMarker = null; }
   if (finishMarker) { finishMarker.remove(); finishMarker = null; }
 }
+
+function resetTimeline() {
+  timelinePoints = [];
+  timelineDurationSec = 0;
+  timelineCurrentSec = 0;
+  timelineSpeedKnots = 0;
+  setTimelinePlaying(false);
+  if (timelineMarker) {
+    timelineMarker.remove();
+    timelineMarker = null;
+  }
+  if (timelineContainer) timelineContainer.classList.add('hidden');
+  if (timelineRange) {
+    timelineRange.value = '0';
+    timelineRange.max = '0';
+    timelineRange.disabled = true;
+  }
+  if (timelineTimestamp) timelineTimestamp.textContent = '';
+  if (timelinePlayPause) timelinePlayPause.textContent = '▶';
+}
+
+function interpolateTimeline(tSec: number): [number, number] | null {
+  if (!timelinePoints.length) return null;
+  if (tSec <= 0) {
+    const first = timelinePoints[0];
+    return [first.lon, first.lat];
+  }
+  if (tSec >= timelinePoints[timelinePoints.length - 1].timeSec) {
+    const last = timelinePoints[timelinePoints.length - 1];
+    return [last.lon, last.lat];
+  }
+  for (let i = 1; i < timelinePoints.length; i++) {
+    const prev = timelinePoints[i - 1];
+    const curr = timelinePoints[i];
+    if (tSec <= curr.timeSec) {
+      const segDuration = curr.timeSec - prev.timeSec;
+      const ratio = segDuration > 0 ? (tSec - prev.timeSec) / segDuration : 0;
+      const lon = prev.lon + (curr.lon - prev.lon) * ratio;
+      const lat = prev.lat + (curr.lat - prev.lat) * ratio;
+      return [lon, lat];
+    }
+  }
+  const fallback = timelinePoints[timelinePoints.length - 1];
+  return [fallback.lon, fallback.lat];
+}
+
+function updateTimelineMarker(tSec: number) {
+  const coord = interpolateTimeline(tSec);
+  if (!coord) return;
+  if (!timelineMarker) {
+    timelineMarker = new maplibregl.Marker({ element: createVesselMarkerElement(), anchor: 'bottom' })
+      .setLngLat(coord)
+      .addTo(map);
+  } else {
+    timelineMarker.setLngLat(coord);
+  }
+  if (timelineTimestamp) {
+    const rounded = Math.round(tSec);
+    const label = rounded <= 0 ? '0s' : formatDuration(rounded);
+    timelineTimestamp.textContent = `${label} — ${timelineSpeedKnots.toFixed(1)} kn`;
+  }
+}
+
+function handleTimelineInput() {
+  if (!timelineRange) return;
+  setTimelinePlaying(false);
+  const value = Number(timelineRange.value);
+  setTimelineValue(value);
+}
+
+if (timelineRange) {
+  timelineRange.addEventListener('input', handleTimelineInput);
+  timelineRange.addEventListener('change', handleTimelineInput);
+}
+
+function setTimelineValue(sec: number) {
+  if (!Number.isFinite(sec)) return;
+  timelineCurrentSec = Math.max(0, Math.min(timelineDurationSec, sec));
+  if (timelineRange) timelineRange.value = timelineCurrentSec.toFixed(1);
+  timelineSpeedKnots = computeTimelineSpeed(timelineCurrentSec);
+  updateTimelineMarker(timelineCurrentSec);
+}
+
+function updatePlayButtonUI() {
+  if (!timelinePlayPause) return;
+  timelinePlayPause.textContent = timelinePlaying ? '❚❚' : '▶';
+}
+
+function timelineTick(timestamp: number) {
+  if (!timelinePlaying) return;
+  if (timelineDurationSec <= 0) {
+    setTimelinePlaying(false);
+    return;
+  }
+  if (timelineLastTick === null) timelineLastTick = timestamp;
+  const deltaMs = timestamp - timelineLastTick;
+  timelineLastTick = timestamp;
+  const deltaSec = (deltaMs / 1000) * timelinePlaybackRate;
+  const next = timelineCurrentSec + deltaSec;
+  setTimelineValue(next);
+  if (timelineCurrentSec >= timelineDurationSec) {
+    setTimelineValue(timelineDurationSec);
+    setTimelinePlaying(false);
+    return;
+  }
+  timelineFrameId = requestAnimationFrame(timelineTick);
+}
+
+function setTimelinePlaying(playing: boolean) {
+  if (playing === timelinePlaying) return;
+  timelinePlaying = playing;
+  updatePlayButtonUI();
+  if (!playing) {
+    if (timelineFrameId !== null) {
+      cancelAnimationFrame(timelineFrameId);
+      timelineFrameId = null;
+    }
+    timelineLastTick = null;
+    return;
+  }
+  timelineLastTick = null;
+  timelineFrameId = requestAnimationFrame(timelineTick);
+}
+
+timelinePlayPause?.addEventListener('click', () => {
+  if (!timelineDurationSec) return;
+  if (timelineCurrentSec >= timelineDurationSec) {
+    setTimelineValue(0);
+  }
+  setTimelinePlaying(!timelinePlaying);
+});
+
+timelineForward?.addEventListener('click', () => {
+  setTimelinePlaying(false);
+  setTimelineValue(timelineCurrentSec + 15);
+});
+
+timelineRewind?.addEventListener('click', () => {
+  setTimelinePlaying(false);
+  setTimelineValue(timelineCurrentSec - 15);
+});
+
+timelineSpeed?.addEventListener('change', () => {
+  const rate = parseFloat(timelineSpeed.value);
+  timelinePlaybackRate = Number.isFinite(rate) && rate > 0 ? rate : 1;
+});
 
 function mapReady(): Promise<void> {
   return new Promise((resolve) => {
@@ -355,7 +534,75 @@ function updateTrackMarkersFromGeoJSON(gj: any) {
   finishMarker = upsertMarker(finishMarker, finish[0], finish[1], '#e03131', finishHTML); // red
 }
 
+function getLineCoordsFromGeoJSON(gj: any): TrackCoord[] {
+  let coords: any[] = [];
+  if (gj?.type === 'Feature' && gj?.geometry?.type === 'LineString') {
+    coords = gj.geometry.coordinates;
+  } else if (gj?.type === 'FeatureCollection') {
+    const f = gj.features?.find((x: any) => x?.geometry?.type === 'LineString');
+    coords = f?.geometry?.coordinates ?? [];
+  }
+  return coords.map((c: any) => ({
+    lon: c[0],
+    lat: c[1],
+    sogMs: (typeof c[2] === 'number' && c[2] > 0) ? c[2] : null,
+  }));
+}
+
+function buildTimelinePoints(coords: TrackCoord[], durationSec: number): TimelinePoint[] {
+  if (!Array.isArray(coords) || coords.length < 2 || !Number.isFinite(durationSec) || durationSec <= 0) {
+    return [];
+  }
+  const segmentDistances: number[] = [];
+  let totalDistance = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const dist = haversineM([coords[i - 1].lon, coords[i - 1].lat], [coords[i].lon, coords[i].lat]);
+    segmentDistances.push(dist);
+    totalDistance += dist;
+  }
+  const points: TimelinePoint[] = [{ timeSec: 0, lon: coords[0].lon, lat: coords[0].lat, speedKn: 0 }];
+  let accumulated = 0;
+  for (let i = 1; i < coords.length; i++) {
+    let segTime: number;
+    if (totalDistance > 0) {
+      segTime = durationSec * (segmentDistances[i - 1] / totalDistance);
+    } else {
+      segTime = durationSec / (coords.length - 1);
+    }
+    accumulated += segTime;
+    const sogKn = (typeof coords[i].sogMs === 'number' && coords[i].sogMs > 0)
+      ? coords[i].sogMs * MS_TO_KN
+      : (segTime > 0 ? (segmentDistances[i - 1] / segTime) * MS_TO_KN : points[i - 1].speedKn);
+    points.push({ timeSec: accumulated, lon: coords[i].lon, lat: coords[i].lat, speedKn: sogKn });
+  }
+  const last = points[points.length - 1];
+  points[points.length - 1] = { ...last, timeSec: durationSec };
+  if (points.length > 1) {
+    points[0].speedKn = points[1].speedKn;
+  }
+  return points;
+}
+
+function activateTimeline(points: TimelinePoint[]) {
+  if (!timelineRange || !timelineContainer) return;
+  timelinePoints = points;
+  timelineDurationSec = points[points.length - 1].timeSec;
+  timelineRange.disabled = false;
+  timelineRange.min = '0';
+  timelineRange.max = Math.ceil(timelineDurationSec).toString();
+  timelineRange.step = '0.1';
+  timelineRange.value = '0';
+  timelineContainer.classList.remove('hidden');
+  if (timelineTimestamp) timelineTimestamp.textContent = formatDuration(0);
+  timelinePlaybackRate = 4;
+  if (timelineSpeed) timelineSpeed.value = '4';
+  timelineSpeedKnots = computeTimelineSpeed(0);
+  setTimelineValue(0);
+  updatePlayButtonUI();
+}
+
 export async function showTrack(id: string) {
+  resetTimeline();
   if (!id) return;
 
   await mapReady();                 // ensure the style is ready
@@ -378,7 +625,14 @@ export async function showTrack(id: string) {
   }
 
   // compute + show stats
-  updateStatsUI(computeTrackStats(gj));
+  const stats = computeTrackStats(gj);
+  updateStatsUI(stats);
+
+  const coords = getLineCoordsFromGeoJSON(gj);
+  const timeline = buildTimelinePoints(coords, stats.durationSec);
+  if (timeline.length >= 2) {
+    activateTimeline(timeline);
+  }
 }
 
 async function populateTrackSelect() {
@@ -502,4 +756,21 @@ async function checkSeamarkAvailable(): Promise<boolean> {
     })();
   }
   return seamarkReady;
+}
+function computeTimelineSpeed(tSec: number): number {
+  if (!timelinePoints.length) return 0;
+  if (tSec <= timelinePoints[0].timeSec) return timelinePoints[0].speedKn;
+  if (tSec >= timelinePoints[timelinePoints.length - 1].timeSec) {
+    return timelinePoints[timelinePoints.length - 1].speedKn;
+  }
+  for (let i = 1; i < timelinePoints.length; i++) {
+    const prev = timelinePoints[i - 1];
+    const curr = timelinePoints[i];
+    if (tSec <= curr.timeSec) {
+      const segDuration = curr.timeSec - prev.timeSec;
+      const ratio = segDuration > 0 ? (tSec - prev.timeSec) / segDuration : 0;
+      return prev.speedKn + (curr.speedKn - prev.speedKn) * ratio;
+    }
+  }
+  return timelinePoints[timelinePoints.length - 1].speedKn;
 }
